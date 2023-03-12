@@ -2,17 +2,25 @@ import java.net.*;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.nio.file.Files;
 import java.net.InetAddress;
 
 public class Server implements Runnable {
     
+    private static Semaphore tokenSemaphore;
     private static ServerSocket serverSocket;
     private static String serverID;
     private Socket clientSocket;
     private static Socket parentConnectionSocket;
     private static int debug = 0;
     private static Integer myPort;
+
+    private static int Request = 1;
+    private static int Release = 2;
+    private static int Relinquish = 3;
+    private static int Grant = 4;
+    private static int Wait = 5;
     
     // Create ServerSocket on the given port
     public void startServer(int port) {
@@ -35,13 +43,11 @@ public class Server implements Runnable {
                             }
                         }
                     });
-
                     clientThread.start();
                 } catch (IOException except) {
                     break;
                 }
             } 
-
 
         } catch (IOException e) {
             System.err.println("Server creation failed !");
@@ -59,10 +65,11 @@ public class Server implements Runnable {
             parentAddress = "dc" + parentAddress + ".utdallas.edu";
             int parentPort = 9037 + numParentPort/2;
             System.out.println("Resolved parent address " + parentAddress + " | " + parentPort);
+            int retryConnection = 2;
             try {
                 parentConnectionSocket = new Socket(parentAddress, parentPort);
             } catch (IOException except) {
-                System.err.println("Failed connecting to parent:\n" + except);
+                System.err.println("Failed connecting to parent: " + except);
             }
         }
     }
@@ -75,12 +82,12 @@ public class Server implements Runnable {
 
     public void manageClients(Socket clientSocket) {
         long currentThread = Thread.currentThread().getId();
-        System.out.println("Thread: " + currentThread + " handling client: " + clientSocket);
+        System.out.println("Thread: " + currentThread + " handling\033[1m\033[32m client: \033[0m " + clientSocket);
     }
 
     public void manageChild(Socket clientSocket) {
         long currentThread = Thread.currentThread().getId();
-        System.out.println("Thread: " + currentThread + " handling child: " + clientSocket);
+        System.out.println("Thread: " + currentThread + " handling\033[1m\033[34m child: \033[0m" + clientSocket);
     }
 
     public void run() {
@@ -89,11 +96,6 @@ public class Server implements Runnable {
     }
 
     public static void main(String[] args) {
-        // if (args.length != 0) { /* If debug argument proved, change flag */
-        //     if (args[0].equals("1")) {
-        //         debug = 1;
-        //     }
-        // }
         try {
             InetAddress localAddress = InetAddress.getLocalHost();
             serverID = localAddress.toString().split("\\.")[0];
@@ -103,7 +105,9 @@ public class Server implements Runnable {
             System.err.println("Host Unknown");
             except.printStackTrace();
         }
-        Server server=new Server();
+        tokenSemaphore = new Semaphore(1);
+
+        // Server server=new Server();
 
         Runnable createServer = new Runnable() {
             public void run() {
@@ -116,6 +120,7 @@ public class Server implements Runnable {
                 }
             }
         };
+
         // Create and start a server thread
         // Thread serverThread = new Thread(() -> new Server().startServer(myPort));
         Thread serverThread = new Thread(new Runnable() {
@@ -133,9 +138,7 @@ public class Server implements Runnable {
             }
         });
         connectParentThread.start();
-
-        
-
+        // System.out.println("\n=== SERVER END ===\n");
     }
 }
 
