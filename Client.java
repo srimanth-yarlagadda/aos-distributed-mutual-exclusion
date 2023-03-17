@@ -16,15 +16,15 @@ public class Client {
 
     private static List<List<Integer>> quorumSet = new ArrayList<List<Integer>>();
     private static Set<Integer> grantList = new HashSet<Integer>();
-    private static boolean CriticalSectionCompletion = false;
+    private static boolean CriticalSectionCompletion;
 
     // Establish connection with Server & create input & output stream objects
     public void lockServer(String serverIP, int port) {
-        System.out.println("Connection request: " + serverIP + port);
+        if (systemDebug) {System.out.println("Connection request: " + serverIP + port);}
         try {
             serverConnection = new Socket(serverIP, port);
             System.out.println("Connection Successful: " + serverConnection.getInetAddress().getHostName().toString());
-            // TimeUnit.SECONDS.sleep(3);
+            int serverID =  Integer.parseInt(serverConnection.getInetAddress().getHostName().toString().split("\\.")[0].substring(2,4));
 
             ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
             ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
@@ -41,7 +41,8 @@ public class Client {
             byte[] byteData = byteArrayOutputStream.toByteArray();
         
             outChannel.write(byteData);
-            System.out.println("Sending a request: " + makeRequest.clientID + "@" + makeRequest.requestTimestamp);
+            String requestString = makeRequest.clientID + "@" + makeRequest.requestTimestamp;
+            System.out.println("Sending a request: " + requestString);
 
             while (true) {
                 int getResponse = inputDataStream.readInt();
@@ -50,7 +51,7 @@ public class Client {
                 }
             }
 
-            grantList.add(Integer.parseInt(serverConnection.getInetAddress().getHostName().toString().split("\\.")[0].substring(2,4)));
+            grantList.add(serverID);
 
             while (!CriticalSectionCompletion) {
                 try {
@@ -60,9 +61,11 @@ public class Client {
                 }
             }
             
-            System.out.println("Releasing lock ... ");
+            // System.out.println("Releasing lock ... ");
             outChannel.writeInt(Release);
-            System.out.println("Released Lock !");
+            serverConnection.close();
+            System.out.println(String.format("Released server: \033[1m\033[32m%02d\033[0m, after " + requestString, serverID));
+            return;
 
         } catch (IOException /*| InterruptedException*/ except) {
             System.err.println("Connection failed!");
@@ -72,7 +75,7 @@ public class Client {
 
     public List<String> generateQuorumIPAddresses(int serverID) {
         List<String> serverList = new ArrayList<String>();
-        if (serverID < 4) {
+        if (serverID >= 4) {
             serverList.add(String.format("dc%02d.utdallas.edu:%d", serverID, 9037 + serverID));
         } else {
             serverList.add(String.format("dc%02d.utdallas.edu:%d", serverID, 9037 + serverID));
@@ -84,12 +87,13 @@ public class Client {
 
     public void getGrant(int serverID) {
         List<String> serverList = generateQuorumIPAddresses(serverID);
-        double requiredGrant = (double) (2*serverList.size())/3;
+        List<Thread> threadList = new ArrayList<Thread>(); 
+        // double requiredGrant = (double) (2*serverList.size())/3;
         int acquiredGrant = 0;
         for (int i = 0; i < serverList.size(); i++) {
             // System.out.println("Begin Lock attempt: " + i);
             final String serverAddress = serverList.get(i);
-            System.out.println("Begin Lock attempt: " + serverAddress);
+            if (systemDebug) {System.out.println("Begin Lock attempt: " + serverAddress);}
             Thread lockServerThread = new Thread(new Runnable() {
                 @Override
                 public void run() {
@@ -99,8 +103,17 @@ public class Client {
                 }
             });
             lockServerThread.start();
+            threadList.add(lockServerThread);
         }
-        System.out.println(requiredGrant);
+        try {
+            for (int i = 0; i < threadList.size(); i++) {
+                Thread t = threadList.get(i);
+                t.join();
+            }
+        } catch (InterruptedException exc) {
+            exc.printStackTrace();
+        }
+        return;
     }
 
     public void criticalSection() {
@@ -140,8 +153,8 @@ public class Client {
 
         List<Integer> quorum1 = new ArrayList<Integer>();
         quorum1.add(1);
-        // quorum1.add(2);
-        // quorum1.add(3);
+        quorum1.add(2);
+        quorum1.add(3);
         quorumSet.add(quorum1);
 
         quorum1 = new ArrayList<Integer>();
@@ -152,26 +165,41 @@ public class Client {
 
         System.out.println("Quorum set:" + quorumSet);
 
-        Random randomServerIDGenerator = new Random();
-        final int mutexGrantServer = 1; //1 + randomServerIDGenerator.nextInt(8); //
-        Thread getGrantThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                new Client().getGrant(mutexGrantServer);
-            }
-        });
-        getGrantThread.start();
+        Random randomWaitTime = new Random();
 
-        Thread criticalSectionThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                new Client().criticalSection();
+        for (int i = 0; i < 3; i++) {
+            grantList = new HashSet<Integer>();
+            CriticalSectionCompletion = false;
+            int waitTime = 5 + randomWaitTime.nextInt(5);
+            try {
+
+                TimeUnit.SECONDS.sleep(waitTime);
+
+                Thread getGrantThread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        new Client().getGrant(1);
+                    }
+                });
+                Thread criticalSectionThread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        new Client().criticalSection();
+                    }
+                });
+
+                getGrantThread.start();
+                criticalSectionThread.start();
+                criticalSectionThread.join();
+                getGrantThread.join();
+                System.out.println("\n\n");
+
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
-        });
-        criticalSectionThread.start();
+        }
 
         // client.startConnection(ipaddress, port);
-
         // System.out.println("\n=== END ===\n");
 
     }
