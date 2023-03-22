@@ -21,13 +21,17 @@ public class Server implements Runnable {
     private static int debug = 0;
     private static Integer myPort;
 
+    public static int activeClients = 0;
     public static boolean killMain = false;
+    public static int killTotal = 1;
 
     private static int Request = 1;
     private static int Release = 2;
     private static int Relinquish = 3;
     private static int Grant = 4;
     private static int Wait = 5;
+    private static int Acknowledgement = 6;
+    private static int ChildShutdown = 10;
 
     private static Deque<Request> requestQueue = new ArrayDeque<>();
     
@@ -37,7 +41,7 @@ public class Server implements Runnable {
             serverSocket = new ServerSocket(port);
             System.out.println("Server started: " + serverSocket.getLocalPort());
             // Accept and manage clients
-            while (true) {
+            while (!killMain) {
                 try {
                     final Socket receiveClientSocket = serverSocket.accept();
                     String clientAddress = receiveClientSocket.getInetAddress().getHostName().toString().split("\\.")[0];
@@ -56,8 +60,9 @@ public class Server implements Runnable {
                 } catch (IOException except) {
                     break;
                 }
-            } 
-
+            }
+            serverSocket.close();
+            return;
         } catch (IOException e) {
             System.err.println("Server creation failed !");
             e.printStackTrace();
@@ -78,6 +83,20 @@ public class Server implements Runnable {
             int retryConnection = 2;
             try {
                 parentConnectionSocket = new Socket(parentAddress, parentPort);
+                DataOutputStream outputDataStream = new DataOutputStream(parentConnectionSocket.getOutputStream());
+                DataInputStream inputDataStream = new DataInputStream(parentConnectionSocket.getInputStream());
+                while (killTotal > 0) {
+                    killTotal = inputDataStream.readInt();
+                }
+                while (activeClients > 0) {
+                    try {
+                        TimeUnit.MICROSECONDS.sleep(5);
+                    } catch (InterruptedException exc) {exc.printStackTrace();}
+                }
+                killMain = true;
+                outputDataStream.writeInt(ChildShutdown);
+                System.out.println("Sending shutdown confirmation !");
+                return;
             } catch (IOException except) {
                 System.err.println("Failed connecting to parent: " + except);
             }
@@ -103,13 +122,19 @@ public class Server implements Runnable {
 
             ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(getRequestBytesFinal);
             ObjectInputStream objectInputStream = new ObjectInputStream(byteArrayInputStream);
+            DataOutputStream outputDataStream = new DataOutputStream(clientSocket.getOutputStream());
             Request clientRequest = (Request) objectInputStream.readObject();
-            clientRequest.Grant = false;
+            if (clientRequest.status) {
+                killTotal --;
+                outputDataStream.writeInt(Acknowledgement);
+                System.out.println("Thread: " + currentThread + " \033[1m\033[32mcomplete\033[0m, client: " + clientSocket.getInetAddress().getHostName().toString());
+                return;
+            }
             requestQueue.addLast(clientRequest);
-            System.out.println("Received a request: " + clientRequest.clientID + " @ " + clientRequest.requestTimestamp + " => " + clientRequest.Grant);
+            System.out.println("Received a request: " + clientRequest.clientID + " @ " + clientRequest.requestTimestamp + " => " + clientRequest.status);
 
-            while (clientRequest.Grant == false) {
-                if (systemDebug) {System.out.println("Status: " + clientRequest.Grant);}
+            while (clientRequest.status == false) {
+                if (systemDebug) {System.out.println("Status: " + clientRequest.status);}
                 try {
                     TimeUnit.MICROSECONDS.sleep(6);
                 } catch (InterruptedException exc) {
@@ -117,15 +142,9 @@ public class Server implements Runnable {
                 }
             }
 
-            // System.out.println(String.format("=> Granting ... %2d !", clientRequest.clientID));
-            // try {
-            //     TimeUnit.SECONDS.sleep(5);
-            // } catch (InterruptedException exc) {
-            //     exc.printStackTrace();
-            // }
             System.out.println(String.format("=> Request %2d Granted !", clientRequest.clientID));
 
-            DataOutputStream outputDataStream = new DataOutputStream(clientSocket.getOutputStream());
+            
             outputDataStream.writeInt(Grant);
             while (true) {
                 int getRelease = inputDataStream.readInt();
@@ -144,7 +163,31 @@ public class Server implements Runnable {
 
     public void manageChild(Socket clientSocket) {
         long currentThread = Thread.currentThread().getId();
-        System.out.println("Thread: " + currentThread + " handling\033[1m\033[34m child:\033[0m " + clientSocket.getInetAddress().getHostName().toString());
+        String childID = clientSocket.getInetAddress().getHostName().toString();
+        System.out.println("Thread: " + currentThread + " handling\033[1m\033[34m child:\033[0m " + childID);
+        try {
+            DataOutputStream outputDataStream = new DataOutputStream(clientSocket.getOutputStream());
+            DataInputStream inputDataStream = new DataInputStream(clientSocket.getInputStream());
+            int currentKillVal = killTotal;
+            while (true) {
+                try {
+                    while (currentKillVal == killTotal) {
+                        TimeUnit.MICROSECONDS.sleep(2);
+                    }
+                    outputDataStream.writeInt(killTotal);
+                    currentKillVal = killTotal;
+                    if (killTotal == 0) {break;}
+                } catch (InterruptedException exc) {
+                    exc.printStackTrace();
+                }
+            }
+            int childShutdown = inputDataStream.readInt();
+            activeClients--;
+            if (childShutdown == ChildShutdown) {System.out.println(childID + " shutting down !");}
+            return;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     public void grantRequests() {
@@ -168,7 +211,7 @@ public class Server implements Runnable {
                     exc.printStackTrace();
                 }
                 Request currentGrant = requestQueue.removeFirst();
-                currentGrant.Grant = true;
+                currentGrant.status = true;
                 System.out.println("Granted request: " + currentGrant.clientID);
                 try {
                     TimeUnit.SECONDS.sleep(6);
@@ -183,6 +226,7 @@ public class Server implements Runnable {
                 }
             }
         } 
+        return;
     }
 
     public static void main(String[] args) {
@@ -191,6 +235,9 @@ public class Server implements Runnable {
             serverID = localAddress.toString().split("\\.")[0];
             myPort = 9037 + Integer.parseInt(serverID.substring(2,4));
             System.out.println("Server | Port ===>   " + serverID + " | " + myPort);
+            if (Integer.parseInt(serverID.substring(2,4)) >= 4) {
+                activeClients = 0;
+            }
         } catch (UnknownHostException except) {
             System.err.println("Host Unknown");
             except.printStackTrace();
@@ -243,24 +290,14 @@ public class Server implements Runnable {
             }
         });
         grantOperationsThread.start();
+
+        try {
+            grantOperationsThread.join();
+            connectParentThread.join();
+            // serverThread.join();
+            System.out.println("\033[1;31mAll threads joined, completing process!\033[0m");
+        } catch (InterruptedException e) {e.printStackTrace();}
         
-        // System.out.println("\n=== SERVER END ===\n");
-        // Deque<Integer> myDeque = new ArrayDeque<>();
-        // myDeque.addLast(1);
-        // myDeque.addLast(2);
-        // System.out.println("\n\n\n" + myDeque.size());
-        // int val = myDeque.removeFirst();
-        // System.out.println(val);
-        // myDeque.addFirst(3);
-        // // System.out.println(myDeque);
-        // try {
-        //     while (true) {
-        //         TimeUnit.SECONDS.sleep(20);
-        //         System.out.println("Main Thread wait..");
-        //     }
-        // } catch (InterruptedException except) {
-        //     except.printStackTrace();
-        // }
 
 
     }
@@ -270,6 +307,6 @@ public class Server implements Runnable {
 class Request implements Serializable {
     int clientID;
     Timestamp requestTimestamp;
-    boolean Grant = false;
+    boolean status = false;
 }
 

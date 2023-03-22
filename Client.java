@@ -6,6 +6,8 @@ import java.sql.*;
 import java.util.concurrent.TimeUnit;
 
 public class Client {
+    private static int totalRequestsNeeded = 1;
+
     private static boolean systemDebug = false;
     private Socket serverConnection;
     private static int Request = 1;
@@ -13,6 +15,7 @@ public class Client {
     private static int Relinquish = 3;
     private static int Grant = 4;
     private static int Wait = 5;
+    private static int Acknowledgement = 6;
 
     private static List<List<Integer>> quorumSet = new ArrayList<List<Integer>>();
     private static Set<Integer> grantList = new HashSet<Integer>();
@@ -36,6 +39,7 @@ public class Client {
             Request makeRequest = new Request();
             makeRequest.clientID = Integer.parseInt(InetAddress.getLocalHost().toString().split("\\.")[0].substring(2,4));
             makeRequest.requestTimestamp = new Timestamp(System.currentTimeMillis());
+            makeRequest.status = false;
 
             objectOutputStream.writeObject(makeRequest);
             byte[] byteData = byteArrayOutputStream.toByteArray();
@@ -52,6 +56,7 @@ public class Client {
             }
 
             grantList.add(serverID);
+            System.out.println(String.format("Got grant from: \033[1m\033[33m%02d\033[0m", serverID));
 
             while (!CriticalSectionCompletion) {
                 try {
@@ -137,7 +142,7 @@ public class Client {
         }
         System.out.println("Entering critical section...");
         try {
-            TimeUnit.SECONDS.sleep(6);
+            TimeUnit.SECONDS.sleep(1);
             CriticalSectionCompletion = true;
         } catch (InterruptedException exc) {
             exc.printStackTrace();
@@ -145,35 +150,79 @@ public class Client {
         System.out.println("Exiting critical section !");
     }
 
+    public static void sendKillSignal(String serverIP, int port) {
+        if (systemDebug) {System.out.println("Connection request: " + serverIP + port);}
+        try {
+            Socket serverConnection = new Socket(serverIP, port);
+            System.out.println("Connection Successful: " + serverConnection.getInetAddress().getHostName().toString());
+            int serverID =  Integer.parseInt(serverConnection.getInetAddress().getHostName().toString().split("\\.")[0].substring(2,4));
+
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
+
+
+            DataOutputStream outChannel = new DataOutputStream(serverConnection.getOutputStream());
+            DataInputStream inputDataStream = new DataInputStream(serverConnection.getInputStream());
+            
+            Request makeRequest = new Request();
+            makeRequest.clientID = Integer.parseInt(InetAddress.getLocalHost().toString().split("\\.")[0].substring(2,4));
+            makeRequest.requestTimestamp = new Timestamp(System.currentTimeMillis());
+            makeRequest.status = true;
+
+            objectOutputStream.writeObject(makeRequest);
+            byte[] byteData = byteArrayOutputStream.toByteArray();
+            outChannel.write(byteData);
+
+            System.out.println("Sent KILL Signal");
+            int getResponse = inputDataStream.readInt();
+            String serverResponse = "";
+            if (getResponse == Acknowledgement) {serverResponse = "Acknowledged!";}
+            System.out.println(String.format("Kill Signal \033[1m\033[33m"+ serverResponse +"\033[0m"));
+
+        } catch (IOException exc) {
+            exc.printStackTrace();
+        }
+    }
+
+
+    
     public static void main(String[] args) {
         /* IP address and Port declarations. Start connection */
         String ipaddress = "dc01.utdallas.edu";
         int port = 9038;
         // Client client =new Client();
 
-        List<Integer> quorum1 = new ArrayList<Integer>();
-        quorum1.add(1);
-        quorum1.add(2);
-        quorum1.add(3);
+        List<Integer> quorum1;
+        quorum1 = new ArrayList<Integer>(Arrays.asList(1,2,3));
         quorumSet.add(quorum1);
-
-        quorum1 = new ArrayList<Integer>();
-        quorum1.add(1);
-        quorum1.add(2);
-        quorum1.add(4);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(1,2,4));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(1,2,5));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(1,3,6));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(1,3,7));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(2,3,4,6));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(2,3,4,7));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(2,3,5,6));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(2,3,5,7));
         quorumSet.add(quorum1);
 
         System.out.println("Quorum set:" + quorumSet);
 
         Random randomWaitTime = new Random();
 
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < totalRequestsNeeded; i++) {
             grantList = new HashSet<Integer>();
             CriticalSectionCompletion = false;
             int waitTime = 5 + randomWaitTime.nextInt(5);
             try {
 
-                TimeUnit.SECONDS.sleep(waitTime);
+                TimeUnit.MICROSECONDS.sleep(waitTime);
 
                 Thread getGrantThread = new Thread(new Runnable() {
                     @Override
@@ -199,8 +248,7 @@ public class Client {
             }
         }
 
-        // client.startConnection(ipaddress, port);
-        // System.out.println("\n=== END ===\n");
+        sendKillSignal("dc01.utdallas.edu", 9038);
 
     }
 }
@@ -208,5 +256,5 @@ public class Client {
 class Request implements Serializable {
     int clientID;
     Timestamp requestTimestamp;
-    boolean Grant;
+    boolean status;
 }
