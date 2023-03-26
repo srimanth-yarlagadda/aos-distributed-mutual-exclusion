@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.net.InetAddress;
 import java.sql.*;
 import java.util.concurrent.TimeUnit;
+import static java.lang.System.out;
 
 
 public class Server implements Runnable {
@@ -21,7 +22,7 @@ public class Server implements Runnable {
     private static int debug = 0;
     private static Integer myPort;
 
-    public static int activeClients = 0;
+    public static int activeClients = 2;
     public static boolean killMain = false;
     public static int killTotal = 1;
 
@@ -37,6 +38,8 @@ public class Server implements Runnable {
     
     // Create ServerSocket on the given port
     public void startServer(int port) {
+        long currentThread = Thread.currentThread().getId();
+        System.out.println("Thread: \033[1m\033[32m" + currentThread + "\033[0m maintaining Server");
         try {
             serverSocket = new ServerSocket(port);
             System.out.println("Server started: " + serverSocket.getLocalPort());
@@ -64,8 +67,10 @@ public class Server implements Runnable {
             serverSocket.close();
             return;
         } catch (IOException e) {
-            System.err.println("Server creation failed !");
-            e.printStackTrace();
+            if (systemDebug) {
+                System.err.println("Server creation failed !");
+                e.printStackTrace();
+            }
         }
         System.out.println("\n\n\nEnding Server");
     }
@@ -74,33 +79,53 @@ public class Server implements Runnable {
         int numParentPort = Integer.parseInt(serverID.substring(2,4));
         String parentAddress = String.format("%02d", numParentPort / 2);
         if (parentAddress.equals("00")) {
-            System.out.println("Root !");
-            return;
+            out.println("\033[1m\033[32m[S1]\033[0m");
         } else {
             parentAddress = "dc" + parentAddress + ".utdallas.edu";
             int parentPort = 9037 + numParentPort/2;
             System.out.println("Resolved parent address " + parentAddress + " | " + parentPort);
             int retryConnection = 2;
+            while (retryConnection > 0) {
+                try {
+                    parentConnectionSocket = new Socket(parentAddress, parentPort);
+                    out.println(".... connected to parent.");
+                    break;
+                } catch (IOException exc) {
+                    try {TimeUnit.SECONDS.sleep(3);} catch (InterruptedException e) {e.printStackTrace();}
+                    retryConnection--;
+                    out.println("retrying connection to parent ....");
+                }
+            }
             try {
-                parentConnectionSocket = new Socket(parentAddress, parentPort);
-                DataOutputStream outputDataStream = new DataOutputStream(parentConnectionSocket.getOutputStream());
                 DataInputStream inputDataStream = new DataInputStream(parentConnectionSocket.getInputStream());
                 while (killTotal > 0) {
                     killTotal = inputDataStream.readInt();
                 }
-                while (activeClients > 0) {
-                    try {
-                        TimeUnit.MICROSECONDS.sleep(5);
-                    } catch (InterruptedException exc) {exc.printStackTrace();}
-                }
-                killMain = true;
-                outputDataStream.writeInt(ChildShutdown);
-                System.out.println("Sending shutdown confirmation !");
-                return;
             } catch (IOException except) {
                 System.err.println("Failed connecting to parent: " + except);
             }
         }
+
+        while (activeClients > 0) {
+            try {
+                TimeUnit.MICROSECONDS.sleep(5);
+            } catch (InterruptedException exc) {exc.printStackTrace();}
+        }
+
+        if (!parentAddress.equals("00")) {
+            try {
+                DataOutputStream outputDataStream = new DataOutputStream(parentConnectionSocket.getOutputStream());
+                killMain = true;
+                outputDataStream.writeInt(ChildShutdown);
+                System.out.println("Sending shutdown confirmation !");
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else {
+            if (systemDebug) {out.println("\033[1m\033[32m Main KILLED \033[0m");}
+            killMain = true;
+        }
+        return;
     }
 
     public Server assignSocket(Socket socket) {
@@ -142,7 +167,7 @@ public class Server implements Runnable {
                 }
             }
 
-            System.out.println(String.format("=> Request %2d Granted !", clientRequest.clientID));
+            System.out.println(String.format("=> Request \033[1m\033[33m%2d\033[0m Granted !", clientRequest.clientID));
 
             
             outputDataStream.writeInt(Grant);
@@ -190,11 +215,6 @@ public class Server implements Runnable {
         }
     }
 
-    public void grantRequests() {
-        while (true) {
-            // Do nothing
-        }
-    }
 
     public void run() {
         long currentThread = Thread.currentThread().getId();
@@ -244,18 +264,6 @@ public class Server implements Runnable {
         }
 
         tokenSemaphore = new Semaphore(1);
-        
-        Runnable createServer = new Runnable() {
-            public void run() {
-                try {
-                    serverSocket = new ServerSocket(myPort);
-                    System.out.println("Server started:\n" + serverSocket);         
-                } catch (IOException except) {
-                    System.err.println("Server creation failed !");
-                    except.printStackTrace();
-                }
-            }
-        };
 
         // Create and start a server thread
         // Thread serverThread = new Thread(() -> new Server().startServer(myPort));
@@ -267,13 +275,13 @@ public class Server implements Runnable {
         });
         serverThread.start();
 
-        Thread grantRequestsThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                new Server().grantRequests();
-            }
-        });
-        grantRequestsThread.start();
+        // Thread grantRequestsThread = new Thread(new Runnable() {
+        //     @Override
+        //     public void run() {
+        //         new Server().grantRequests();
+        //     }
+        // });
+        // grantRequestsThread.start();
 
         Thread connectParentThread = new Thread(new Runnable() {
             @Override
@@ -294,11 +302,13 @@ public class Server implements Runnable {
         try {
             grantOperationsThread.join();
             connectParentThread.join();
-            // serverThread.join();
+            serverSocket.close();
+            serverThread.join();
             System.out.println("\033[1;31mAll threads joined, completing process!\033[0m");
-        } catch (InterruptedException e) {e.printStackTrace();}
-        
-
+            System.exit(0);
+        } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
+        }
 
     }
 }
