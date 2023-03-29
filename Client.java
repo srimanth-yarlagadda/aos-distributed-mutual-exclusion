@@ -3,15 +3,17 @@ import java.io.*;
 import java.nio.file.Files;
 import java.util.*;
 import java.sql.*;
-import java.util.concurrent.TimeUnit;
+import java.text.SimpleDateFormat;
+import java.util.concurrent.*;
 import static java.lang.System.out;
 
 public class Client {
-    private static int totalRequestsNeeded = 2;
-    private static int timeUnitMultiplier = 1;
-
+    private static int totalRequestsNeeded = 20;
     private static boolean systemDebug = false;
     private static boolean verbose = false;
+    private static boolean silent = true;
+
+    private static int timeUnitMultiplier = 1;
     private Socket serverConnection;
     private static int Request = 1;
     private static int Release = 2;
@@ -22,12 +24,18 @@ public class Client {
 
     private static List<List<Integer>> quorumSet = new ArrayList<List<Integer>>();
     private static Set<Integer> grantList = new HashSet<Integer>();
+    private static Semaphore grantListLock;
     private static boolean CriticalSectionCompletion;
 
     private boolean waitForGrant;
     private boolean listenBool;
     private int serverResponseCode;
     private Client parentClient;
+
+    private static int outGoingMessages = 0;
+    private static int incomingMessages = 0;
+    private static Long startTime, csTime;
+    private static List<Logs> runLogs = new ArrayList<Logs>(); 
 
     public void initThreadStatus(boolean waitForGrant, boolean listenBool, int serverResponseCode) {
         this.waitForGrant = waitForGrant;
@@ -37,7 +45,6 @@ public class Client {
 
     public void updateFromListener(int serverResponseCode, int serverGranted) {
         this.serverResponseCode = serverResponseCode;
-        // grantList.add(serverResponseCode);
     }
 
     public Client assignParentClient(Client parent) {
@@ -55,7 +62,6 @@ public class Client {
             ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
             ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
 
-
             DataOutputStream outChannel = new DataOutputStream(serverConnection.getOutputStream());
             final DataInputStream inputDataStream = new DataInputStream(serverConnection.getInputStream());
             
@@ -64,21 +70,14 @@ public class Client {
             makeRequest.requestTimestamp = new Timestamp(System.currentTimeMillis());
             makeRequest.status = false;
 
-            objectOutputStream.writeObject(makeRequest);
+            objectOutputStream.writeObject(makeRequest); 
             byte[] byteData = byteArrayOutputStream.toByteArray();
         
-            outChannel.write(byteData);
-            String requestString = makeRequest.clientID + "@" + makeRequest.requestTimestamp;
-            if (true) {out.println(serverID + " <<= Sending to, a request: " + requestString);}
+            outChannel.write(byteData); outGoingMessages++;
+            SimpleDateFormat timeStringMaker = new SimpleDateFormat("hh:mm:ss");
+            String requestString = makeRequest.clientID + " @ " + timeStringMaker.format(makeRequest.requestTimestamp);
+            if (!silent) {out.println("Requesting server " + serverID + " for " + requestString);}
 
-            // while (true) {
-            //     int getResponse = inputDataStream.readInt();
-            //     if (getResponse == Grant) {
-            //         break;
-            //     }
-            // }
-
-            // grantList.add(serverID);
             final Client myNewClient = new Client();
             myNewClient.assignParentClient(this);
             Thread interruptionListenerThread = new Thread(new Runnable() {
@@ -90,13 +89,6 @@ public class Client {
             });
             interruptionListenerThread.start();
 
-            // try {
-            //     TimeUnit.SECONDS.sleep(3);
-            // } catch (InterruptedException exc) {
-            //     exc.printStackTrace();
-            // }
-            
-
             while (!CriticalSectionCompletion) {
                 try {
                     TimeUnit.MICROSECONDS.sleep(5);
@@ -106,11 +98,11 @@ public class Client {
             }
             
             // out.println("Releasing lock ... ");
-            outChannel.writeInt(Release);
+            outChannel.writeInt(Release); outGoingMessages++;
             listenBool = false;
             interruptionListenerThread.join();
             serverConnection.close();
-            out.println(String.format("Released server: \033[1m\033[32m%02d\033[0m, after " + requestString, serverID));
+            if (!silent) {out.println(String.format("Released : \033[1m\033[32m%02d\033[0m, after " + requestString, serverID));}
             return;
 
         } catch (IOException | InterruptedException except) {
@@ -122,12 +114,14 @@ public class Client {
     public void interruptionListener(DataInputStream inputDataStream, int serverID) {
         try {
             // while (listenBool && (serverResponseCode = inputDataStream.readInt())!=-1) {
-                serverResponseCode = inputDataStream.readInt();
+                serverResponseCode = inputDataStream.readInt(); incomingMessages++;
                 if (serverResponseCode == Grant) {
                     if (!CriticalSectionCompletion) {
                         parentClient.updateFromListener(serverResponseCode, serverID);
+                        grantListLock.acquire();
                         grantList.add(serverID);
-                        out.println(String.format("Got grant from: \033[1m\033[33m%02d\033[0m", serverID));
+                        grantListLock.release();
+                        if (!silent) {out.println(String.format("Got grant from: \033[1m\033[33m%02d\033[0m", serverID));}
                         while (!CriticalSectionCompletion) {
                             try {
                                 TimeUnit.MICROSECONDS.sleep(5);
@@ -139,7 +133,7 @@ public class Client {
                     
                 }
             // }
-        } catch (IOException e) {
+        } catch (IOException | InterruptedException e) {
             out.println("Interruption Listener Stopping !");
         }
     }
@@ -158,7 +152,7 @@ public class Client {
         List<String> serverList = generateQuorumIPAddresses();
         List<Thread> threadList = new ArrayList<Thread>(); 
         // double requiredGrant = (double) (2*serverList.size())/3;
-        out.println("\n\n" + serverList + "\n\n");
+        // out.println("\n\n" + serverList + "\n\n");
         int acquiredGrant = 0;
         for (int i = 0; i < serverList.size(); i++) {
             // out.println("Begin Lock attempt: " + i);
@@ -187,7 +181,7 @@ public class Client {
     }
 
     public void criticalSection() {
-        boolean criticalSectionGrant = false;
+        boolean criticalSectionGrant = false; List<Integer> quorumMatch = null;
         while (!criticalSectionGrant) {
             for (int i = 0; i < quorumSet.size(); i++) {
                 List<Integer> quorum = quorumSet.get(i);
@@ -201,14 +195,16 @@ public class Client {
                 }
                 if (required <= 0) {
                     criticalSectionGrant = true;
+                    quorumMatch = new ArrayList<>(quorumSet.get(i));
                     break;
                 }
             }
         }
-        out.println("Entering critical section...");
+        out.println("Entering critical section");
+        out.println("Grants: " + grantList + " Quorum: " + quorumMatch);
         try {
+            csTime = System.currentTimeMillis();
             TimeUnit.MICROSECONDS.sleep(3*timeUnitMultiplier);
-            TimeUnit.SECONDS.sleep(6*timeUnitMultiplier);
             CriticalSectionCompletion = true;
         } catch (InterruptedException exc) {
             exc.printStackTrace();
@@ -237,10 +233,10 @@ public class Client {
 
             objectOutputStream.writeObject(makeRequest);
             byte[] byteData = byteArrayOutputStream.toByteArray();
-            outChannel.write(byteData);
+            outChannel.write(byteData); outGoingMessages++;
 
             out.println("Sent KILL Signal");
-            int getResponse = inputDataStream.readInt();
+            int getResponse = inputDataStream.readInt(); incomingMessages++;
             String serverResponse = "";
             if (getResponse == Acknowledgement) {serverResponse = "Acknowledged!";}
             out.println(String.format("Kill Signal \033[1m\033[33m"+ serverResponse +"\033[0m"));
@@ -260,13 +256,9 @@ public class Client {
         }
         String ipaddress = "dc01.utdallas.edu";
         int port = 9038;
-        // Client client =new Client();
+        grantListLock = new Semaphore(1);
 
         List<Integer> quorum1;
-        // quorum1 = new ArrayList<Integer>(Arrays.asList(1));
-        // quorumSet.add(quorum1);
-        quorum1 = new ArrayList<Integer>(Arrays.asList(1,2,3));
-        quorumSet.add(quorum1);
         quorum1 = new ArrayList<Integer>(Arrays.asList(1,2,4));
         quorumSet.add(quorum1);
         quorum1 = new ArrayList<Integer>(Arrays.asList(1,2,5));
@@ -284,18 +276,29 @@ public class Client {
         quorum1 = new ArrayList<Integer>(Arrays.asList(2,3,5,7));
         quorumSet.add(quorum1);
 
-        out.println("Quorum set:" + quorumSet);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(2,4,6,7));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(2,5,6,7));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(4,5,3,6));
+        quorumSet.add(quorum1);
+        quorum1 = new ArrayList<Integer>(Arrays.asList(4,5,3,7));
+        quorumSet.add(quorum1);
+
+        if (!silent) {out.println("Quorum set:" + quorumSet);}
 
         Random randomWaitTime = new Random();
 
         for (int i = 0; i < totalRequestsNeeded; i++) {
-            out.println("\u001B[38;2;255;105;180m==== ITERATION " + i + "=======\n\u001B[0m");
+            out.println("\u001B[38;2;255;105;180m[Request " + i + "]\n\u001B[0m");
             grantList = new HashSet<Integer>();
             CriticalSectionCompletion = false;
-            int waitTime = 3 + randomWaitTime.nextInt(5);
+            incomingMessages = 0; outGoingMessages = 0; startTime = 0L; csTime = 0L;
+            int waitTime = 5 + randomWaitTime.nextInt(5);
             try {
 
-                TimeUnit.SECONDS.sleep(waitTime * timeUnitMultiplier);
+                TimeUnit.SECONDS.sleep(waitTime);
+                startTime = System.currentTimeMillis();
 
                 Thread getGrantThread = new Thread(new Runnable() {
                     @Override
@@ -314,15 +317,18 @@ public class Client {
                 criticalSectionThread.start();
                 criticalSectionThread.join();
                 getGrantThread.join();
-                out.println("\u001B[38;2;255;105;180m==== END " + i + "=======\n\u001B[0m");
+
+                runLogs.add(new Logs(i, incomingMessages, outGoingMessages, startTime, csTime));
+                out.println("\u001B[38;2;255;105;180m[END " + i + "]\n\u001B[0m");
 
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
         }
-
         sendKillSignal("dc01.utdallas.edu", 9038);
-
+        for (Logs l: runLogs) {
+            out.println(l.toString());
+        }
     }
 }
 
@@ -330,4 +336,29 @@ class Request implements Serializable {
     int clientID;
     Timestamp requestTimestamp;
     boolean status;
+}
+
+class Logs {
+    int iterationID;
+    int incomingMessages;
+    int outGoingMessages;
+    Long requestStartTime;
+    Long criticalSectionTime;
+    Long elapsedTimeForCS;
+
+    public Logs(int iterationID, int incomingMessages, int outGoingMessages, Long requestStartTime, Long criticalSectionTime) {
+        this.iterationID = iterationID;
+        this.incomingMessages = incomingMessages;
+        this.outGoingMessages = outGoingMessages;
+        this.requestStartTime = requestStartTime;
+        this.criticalSectionTime = criticalSectionTime;
+        this.elapsedTimeForCS = criticalSectionTime - requestStartTime;
+    }
+
+    public String toString() {
+        return "Iteration: " + iterationID +
+               " Messages in/out: " + incomingMessages +
+               "/" + outGoingMessages +
+               " Time: " + (criticalSectionTime-requestStartTime)/1000 + " seconds.";
+    }
 }

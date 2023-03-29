@@ -1,3 +1,5 @@
 *.class
 Server$*
 Client$*
+s*
+c*

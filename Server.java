@@ -15,6 +15,8 @@ import static java.lang.System.out;
 public class Server implements Runnable {
 
     private static boolean systemDebug = true;
+    private static boolean verbose = false;
+    private static boolean silent = true;
     
     private static Semaphore tokenSemaphore;
     private static ServerSocket serverSocket;
@@ -26,7 +28,7 @@ public class Server implements Runnable {
 
     public static int activeClients = 2;
     public static boolean killMain = false;
-    public static int killTotal = 3;
+    public static int killTotal = 5;
 
     private static int Request = 1;
     private static int Release = 2;
@@ -35,6 +37,9 @@ public class Server implements Runnable {
     private static int Wait = 5;
     private static int Acknowledgement = 6;
     private static int ChildShutdown = 10;
+
+    private static int outGoingMessages = 0;
+    private static int incomingMessages = 0;
 
     private boolean waitForGrant;
     private int clientResponseCode;
@@ -137,7 +142,7 @@ public class Server implements Runnable {
                 DataOutputStream outputDataStream = new DataOutputStream(parentConnectionSocket.getOutputStream());
                 killMain = true;
                 outputDataStream.writeInt(ChildShutdown);
-                System.out.println("Sending shutdown confirmation !");
+                if (verbose) {System.out.println("Sending shutdown confirmation !");}
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -161,15 +166,16 @@ public class Server implements Runnable {
     public void interruptionListener(DataInputStream inputDataStream) {
         try {
             clientResponseCode = inputDataStream.readInt();
+            incomingMessages++;
             if (clientResponseCode == Release) {
                 waitForGrant = false;
                 parentServer.initThreadStatus(false, clientResponseCode);
-                out.println("Ending interruptionListener: " + clientResponseCode);
+                if (verbose) {out.println("Ending interruptionListener: " + clientResponseCode);}
             } else {
-                out.println("interruptionListener got unknown code");
+                if (verbose) {out.println("interruptionListener got unknown code");}
             }
         } catch (IOException e) {
-            out.println("interruptionListener terminated!");
+            out.println("InterruptionListener Terminated!");
             e.printStackTrace();
         }
         return;
@@ -189,9 +195,11 @@ public class Server implements Runnable {
             ObjectInputStream objectInputStream = new ObjectInputStream(byteArrayInputStream);
             DataOutputStream outputDataStream = new DataOutputStream(clientSocket.getOutputStream());
             Request clientRequest = (Request) objectInputStream.readObject();
+            incomingMessages++;
             if (clientRequest.status) {
                 killTotal --;
                 outputDataStream.writeInt(Acknowledgement);
+                outGoingMessages++;
                 System.out.println("Thread: " + currentThread + " \033[1m\033[32mcomplete\033[0m, client: " + clientSocket.getInetAddress().getHostName().toString());
                 return;
             }
@@ -218,10 +226,11 @@ public class Server implements Runnable {
 
             if (waitForGrant) {
                 outputDataStream.writeInt(Grant);
+                outGoingMessages++;
                 System.out.println(String.format("=> Request \033[1m\033[33m%2d\033[0m Granted !", clientRequest.clientID));
                 while (true) {
                     if (clientResponseCode == Release) {
-                        out.println("Got release code, breaking now!!");
+                        if (verbose) {out.println("Got release code, breaking now!!");}
                         break;
                     } else {
                         try {
@@ -233,12 +242,12 @@ public class Server implements Runnable {
                     }
                 }
                 tokenSemaphore.release();
-                out.println("Semaphore release !");
-                out.println("\u001B[38;2;255;105;180mReleased..."+clientRequest.clientID+"\u001B[0m");
+                if (verbose) {out.println("Semaphore release !");}
+                out.println("\u001B[38;2;255;105;180mReleased by "+clientRequest.clientID+"\u001B[0m");
             } else {
-                out.println("\u001B[38;2;255;105;180m======>>Else statement..."+clientRequest.clientID+"\u001B[0m");
+                if (verbose) {out.println("\u001B[38;2;255;105;180m======>>Else statement..."+clientRequest.clientID+"\u001B[0m");}
                 tokenSemaphore.release();
-                out.println("\u001B[38;2;255;105;180mReleased...\u001B[0m");
+                out.println("\u001B[38;2;255;105;180mReleased by \u001B[0m");
             }
             
             System.out.println("Thread: " + currentThread + " \033[1m\033[32mcomplete\033[0m, client: " + clientSocket.getInetAddress().getHostName().toString());
@@ -286,15 +295,12 @@ public class Server implements Runnable {
     public void grantOperations() {
         while (!killMain) {
             if (requestQueue.size() > 0) {
-                // out.println("SOMETHING IN Q: " + requestQueue.toString());
-                // out.println("\u001B[38;2;255;105;180mAcquire...\u001B[0m");
                 boolean acquire = tokenSemaphore.tryAcquire();
                 if (acquire) {
-                    out.println("\u001B[38;2;255;105;180mAcquired!\u001B[0m");
+                    if (!silent) {out.println("\u001B[38;2;255;105;180mAcquired!\u001B[0m");}
                     Request currentGrant = requestQueue.poll();
                     currentGrant.status = true;
-                    // System.out.println("Granted request: " + currentGrant.clientID);
-                    out.println("\u001B[38;2;255;105;180mGranted request: "+currentGrant.clientID+"\u001B[0m");
+                    if (!silent) {out.println("\u001B[38;2;255;105;180mGranted request: "+currentGrant.clientID+"\u001B[0m");}
                 } else {
                     // out.println("[no acq] SOMETHING IN Q: " + requestQueue.toString());
                     try {
@@ -306,7 +312,6 @@ public class Server implements Runnable {
             } else {
                 try {
                     TimeUnit.MICROSECONDS.sleep(1);
-                    // out.println("EMPTY Q: " + requestQueue.toString());
                 } catch (InterruptedException exc) {
                     exc.printStackTrace();
                 }
@@ -330,11 +335,6 @@ public class Server implements Runnable {
         }
 
         tokenSemaphore = new Semaphore(1);
-        // try {
-        //     tokenSemaphore.acquire();
-        // } catch (InterruptedException e) {
-        //     e.printStackTrace();
-        // }
 
         // Create and start a server thread
         // Thread serverThread = new Thread(() -> new Server().startServer(myPort));
@@ -345,14 +345,6 @@ public class Server implements Runnable {
             }
         });
         serverThread.start();
-
-        // Thread grantRequestsThread = new Thread(new Runnable() {
-        //     @Override
-        //     public void run() {
-        //         new Server().grantRequests();
-        //     }
-        // });
-        // grantRequestsThread.start();
 
         Thread connectParentThread = new Thread(new Runnable() {
             @Override
@@ -376,6 +368,7 @@ public class Server implements Runnable {
             serverSocket.close();
             serverThread.join();
             System.out.println("\033[1;31mAll threads joined, completing process!\033[0m");
+            out.println("Total incoming messages: " + incomingMessages + ", outgoing messagest: " + outGoingMessages + ".");
             System.exit(0);
         } catch (IOException | InterruptedException e) {
             e.printStackTrace();
