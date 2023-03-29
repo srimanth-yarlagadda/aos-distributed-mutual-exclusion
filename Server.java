@@ -2,6 +2,8 @@ import java.net.*;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.PriorityQueue;
+import java.util.Comparator;
 import java.util.concurrent.*;
 import java.nio.file.Files;
 import java.net.InetAddress;
@@ -24,7 +26,7 @@ public class Server implements Runnable {
 
     public static int activeClients = 2;
     public static boolean killMain = false;
-    public static int killTotal = 2;
+    public static int killTotal = 3;
 
     private static int Request = 1;
     private static int Release = 2;
@@ -37,7 +39,12 @@ public class Server implements Runnable {
     private boolean waitForGrant;
     private int clientResponseCode;
     private Server parentServer;
-    private static Deque<Request> requestQueue = new ArrayDeque<>();
+    private static PriorityQueue<Request> requestQueue = new PriorityQueue<Request>(100,new Comparator<Request>() {
+        @Override
+        public int compare(Request rone, Request rtwo) {
+            return Long.compare(rone.requestTimestamp.getTime(), rtwo.requestTimestamp.getTime());
+        }
+    });
 
     public void setWaitForGrant(boolean val) {waitForGrant = val;}
     public void setClientResponseCode(int val) {clientResponseCode = val;}
@@ -188,7 +195,7 @@ public class Server implements Runnable {
                 System.out.println("Thread: " + currentThread + " \033[1m\033[32mcomplete\033[0m, client: " + clientSocket.getInetAddress().getHostName().toString());
                 return;
             }
-            requestQueue.addLast(clientRequest);
+            requestQueue.add(clientRequest);
             System.out.println("Received a request: " + clientRequest.clientID + " @ " + clientRequest.requestTimestamp + " => " + clientRequest.status);
 
             final Server newListner = new Server();
@@ -284,7 +291,7 @@ public class Server implements Runnable {
                 boolean acquire = tokenSemaphore.tryAcquire();
                 if (acquire) {
                     out.println("\u001B[38;2;255;105;180mAcquired!\u001B[0m");
-                    Request currentGrant = requestQueue.removeFirst();
+                    Request currentGrant = requestQueue.poll();
                     currentGrant.status = true;
                     // System.out.println("Granted request: " + currentGrant.clientID);
                     out.println("\u001B[38;2;255;105;180mGranted request: "+currentGrant.clientID+"\u001B[0m");
