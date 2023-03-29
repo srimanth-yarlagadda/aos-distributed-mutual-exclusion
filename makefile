@@ -1,7 +1,11 @@
-default:
+default: clean
 	clear
 	javac Server.java
 	java Server
+
+clean:
+	rm -rf Server\$*.class
+	rm -rf Server.class
 
 c:
 	clear

@@ -12,7 +12,7 @@ import static java.lang.System.out;
 
 public class Server implements Runnable {
 
-    private static boolean systemDebug = false;
+    private static boolean systemDebug = true;
     
     private static Semaphore tokenSemaphore;
     private static ServerSocket serverSocket;
@@ -24,7 +24,7 @@ public class Server implements Runnable {
 
     public static int activeClients = 2;
     public static boolean killMain = false;
-    public static int killTotal = 1;
+    public static int killTotal = 2;
 
     private static int Request = 1;
     private static int Release = 2;
@@ -34,7 +34,18 @@ public class Server implements Runnable {
     private static int Acknowledgement = 6;
     private static int ChildShutdown = 10;
 
+    private boolean waitForGrant;
+    private int clientResponseCode;
+    private Server parentServer;
     private static Deque<Request> requestQueue = new ArrayDeque<>();
+
+    public void setWaitForGrant(boolean val) {waitForGrant = val;}
+    public void setClientResponseCode(int val) {clientResponseCode = val;}
+    public Server initThreadStatus(boolean val1, int val2) {
+        this.waitForGrant = val1;
+        this.clientResponseCode = val2;
+        return this;
+    }
     
     // Create ServerSocket on the given port
     public void startServer(int port) {
@@ -49,13 +60,15 @@ public class Server implements Runnable {
                     final Socket receiveClientSocket = serverSocket.accept();
                     String clientAddress = receiveClientSocket.getInetAddress().getHostName().toString().split("\\.")[0];
                     final int clientID = Integer.parseInt(clientAddress.substring(2,4));
+                    final Server myNewServer = new Server();
                     Thread clientThread = new Thread(new Runnable() {
                         @Override
                         public void run() {
                             if (clientID > 1 && clientID <= 7) {
-                                new Server().manageChild(receiveClientSocket);
+                                myNewServer.manageChild(receiveClientSocket);
                             } else {
-                                new Server().manageClients(receiveClientSocket);
+                                myNewServer.initThreadStatus(true, 0);
+                                myNewServer.manageClients(receiveClientSocket);
                             }
                         }
                     });
@@ -133,13 +146,33 @@ public class Server implements Runnable {
         return this;
     }
 
+    public Server assignParent(Server parent) {
+        this.parentServer = parent; return this;
+    }
+
+
+    public void interruptionListener(DataInputStream inputDataStream) {
+        try {
+            clientResponseCode = inputDataStream.readInt();
+            if (clientResponseCode == Release) {
+                waitForGrant = false;
+                parentServer.initThreadStatus(false, clientResponseCode);
+                out.println("Ending interruptionListener: " + clientResponseCode);
+            } else {
+                out.println("interruptionListener got unknown code");
+            }
+        } catch (IOException e) {
+            out.println("interruptionListener terminated!");
+            e.printStackTrace();
+        }
+        return;
+    }
 
     public void manageClients(Socket clientSocket) {
         long currentThread = Thread.currentThread().getId();
-        System.out.println("Thread: " + currentThread + " handling\033[1m\033[32m client:\033[0m " + clientSocket.getInetAddress().getHostName().toString());
+        System.out.println("Thread: " + currentThread + " handling\033[1m\033[32m client:\033[0m " + clientSocket.getInetAddress().getHostName().toString() + "[" + waitForGrant + " " + clientResponseCode +"]");
         try {
-
-            DataInputStream inputDataStream = new DataInputStream(clientSocket.getInputStream());
+            final DataInputStream inputDataStream = new DataInputStream(clientSocket.getInputStream());
             byte[] getRequestBytes = new byte[1024];
             int reqSize = inputDataStream.read(getRequestBytes);
             byte[] getRequestBytesFinal = new byte[reqSize];
@@ -158,8 +191,17 @@ public class Server implements Runnable {
             requestQueue.addLast(clientRequest);
             System.out.println("Received a request: " + clientRequest.clientID + " @ " + clientRequest.requestTimestamp + " => " + clientRequest.status);
 
-            while (clientRequest.status == false) {
-                if (systemDebug) {System.out.println("Status: " + clientRequest.status);}
+            final Server newListner = new Server();
+            newListner.assignParent(this);
+            Thread interruptionListenerThread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        newListner.interruptionListener(inputDataStream);
+                    }
+                });
+            interruptionListenerThread.start();
+            while ((clientRequest.status == false) & waitForGrant) {
+                if (false) {System.out.println("Status: " + clientRequest.status);}
                 try {
                     TimeUnit.MICROSECONDS.sleep(6);
                 } catch (InterruptedException exc) {
@@ -167,18 +209,31 @@ public class Server implements Runnable {
                 }
             }
 
-            System.out.println(String.format("=> Request \033[1m\033[33m%2d\033[0m Granted !", clientRequest.clientID));
-
-            
-            outputDataStream.writeInt(Grant);
-            while (true) {
-                int getRelease = inputDataStream.readInt();
-                if (getRelease == Release) {
-                    break;
+            if (waitForGrant) {
+                outputDataStream.writeInt(Grant);
+                System.out.println(String.format("=> Request \033[1m\033[33m%2d\033[0m Granted !", clientRequest.clientID));
+                while (true) {
+                    if (clientResponseCode == Release) {
+                        out.println("Got release code, breaking now!!");
+                        break;
+                    } else {
+                        try {
+                            TimeUnit.MICROSECONDS.sleep(3);
+                            // out.println("response code not fulfilled: " + clientResponseCode);
+                        } catch (InterruptedException exc) {
+                            exc.printStackTrace();
+                        }
+                    }
                 }
+                tokenSemaphore.release();
+                out.println("Semaphore release !");
+                out.println("\u001B[38;2;255;105;180mReleased..."+clientRequest.clientID+"\u001B[0m");
+            } else {
+                out.println("\u001B[38;2;255;105;180m======>>Else statement..."+clientRequest.clientID+"\u001B[0m");
+                tokenSemaphore.release();
+                out.println("\u001B[38;2;255;105;180mReleased...\u001B[0m");
             }
-
-            tokenSemaphore.release();
+            
             System.out.println("Thread: " + currentThread + " \033[1m\033[32mcomplete\033[0m, client: " + clientSocket.getInetAddress().getHostName().toString());
 
         } catch (IOException | ClassNotFoundException except) {
@@ -223,24 +278,28 @@ public class Server implements Runnable {
 
     public void grantOperations() {
         while (!killMain) {
-            if (systemDebug) {System.out.println("Grant ops" + requestQueue.size());}
             if (requestQueue.size() > 0) {
-                try {
-                    tokenSemaphore.acquire();
-                } catch (InterruptedException exc) {
-                    exc.printStackTrace();
-                }
-                Request currentGrant = requestQueue.removeFirst();
-                currentGrant.status = true;
-                System.out.println("Granted request: " + currentGrant.clientID);
-                try {
-                    TimeUnit.SECONDS.sleep(6);
-                } catch (InterruptedException exc) {
-                    exc.printStackTrace();
+                // out.println("SOMETHING IN Q: " + requestQueue.toString());
+                // out.println("\u001B[38;2;255;105;180mAcquire...\u001B[0m");
+                boolean acquire = tokenSemaphore.tryAcquire();
+                if (acquire) {
+                    out.println("\u001B[38;2;255;105;180mAcquired!\u001B[0m");
+                    Request currentGrant = requestQueue.removeFirst();
+                    currentGrant.status = true;
+                    // System.out.println("Granted request: " + currentGrant.clientID);
+                    out.println("\u001B[38;2;255;105;180mGranted request: "+currentGrant.clientID+"\u001B[0m");
+                } else {
+                    // out.println("[no acq] SOMETHING IN Q: " + requestQueue.toString());
+                    try {
+                        TimeUnit.MICROSECONDS.sleep(1);
+                    } catch (InterruptedException exc) {
+                        exc.printStackTrace();
+                    }
                 }
             } else {
                 try {
-                    TimeUnit.MICROSECONDS.sleep(5);
+                    TimeUnit.MICROSECONDS.sleep(1);
+                    // out.println("EMPTY Q: " + requestQueue.toString());
                 } catch (InterruptedException exc) {
                     exc.printStackTrace();
                 }
@@ -264,6 +323,11 @@ public class Server implements Runnable {
         }
 
         tokenSemaphore = new Semaphore(1);
+        // try {
+        //     tokenSemaphore.acquire();
+        // } catch (InterruptedException e) {
+        //     e.printStackTrace();
+        // }
 
         // Create and start a server thread
         // Thread serverThread = new Thread(() -> new Server().startServer(myPort));
@@ -319,4 +383,3 @@ class Request implements Serializable {
     Timestamp requestTimestamp;
     boolean status = false;
 }
-
