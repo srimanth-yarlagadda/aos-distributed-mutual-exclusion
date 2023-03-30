@@ -9,7 +9,7 @@ clean:
 
 c:
 	clear
-	javac Client.java
+	javac ClientHelper.java Client.java
 
 micro: c
 	java Client
